@@ -1,23 +1,24 @@
 {
-    "name": "yauhenko/sim800l-php",
-    "type": "library",
-    "authors": [
-        {
-            "name": "Yauheni Kiryienkau",
-            "email": "ya@redstream.by"
-        }
-    ],
-    "autoload": {
-        "psr-4": {
-            "Yauhenko\\GSM\\": "./src"
-        }
-    },
-    "minimum-stability": "stable",
-    "require": {
-        "react/event-loop": "^1.1",
-        "react/stream": "^1.1",
-        "react/promise": "^2.8",
-        "react/child-process": "^0.6.2",
-        "yauhenko/composer-version-plugin": "^0.1.5"
-    }
+	"name": "yauhenko/sim800l-php",
+	"type": "library",
+	"authors": [
+		{
+			"name": "Yauheni Kiryienkau",
+			"email": "ya@redstream.by"
+		}
+	],
+	"autoload": {
+		"psr-4": {
+			"Yauhenko\\GSM\\": "./src"
+		}
+	},
+	"minimum-stability": "stable",
+	"require": {
+		"react/event-loop": "^1.1",
+		"react/stream": "^1.1",
+		"react/promise": "^2.8",
+		"react/child-process": "^0.6.2",
+		"yauhenko/composer-version-plugin": "^0.1.5"
+	},
+	"version": "0.0.1"
 }
