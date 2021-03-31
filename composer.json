@@ -1,5 +1,7 @@
 {
 	"name": "yauhenko/sim800l-php",
+	"description": "PHP-SDK for SIM800L GSM module",
+	"version": "0.0.1",
 	"type": "library",
 	"authors": [
 		{
@@ -14,11 +16,11 @@
 	},
 	"minimum-stability": "stable",
 	"require": {
+		"php": "^8.0",
 		"react/event-loop": "^1.1",
 		"react/stream": "^1.1",
 		"react/promise": "^2.8",
 		"react/child-process": "^0.6.2",
 		"yauhenko/composer-version-plugin": "^0.1.5"
-	},
-	"version": "0.0.1"
+	}
 }
