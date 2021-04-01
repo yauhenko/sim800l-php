@@ -20,7 +20,6 @@
 		"react/event-loop": "^1.1",
 		"react/stream": "^1.1",
 		"react/promise": "^2.8",
-		"react/child-process": "^0.6.2",
-		"yauhenko/composer-version-plugin": "^0.1.5"
+		"react/child-process": "^0.6.2"
 	}
 }

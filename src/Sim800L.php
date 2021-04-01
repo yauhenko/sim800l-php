@@ -93,7 +93,7 @@ class Sim800L {
 					call_user_func($this->resolve, $result);
 
 				// ERROR
-				} elseif($line === 'ERROR' || str_contains($line, '+CME ERROR')) {
+				} elseif($line === 'ERROR' || strpos($line, '+CME ERROR') === 0) {
 					$line = trim(str_replace('+CME ERROR:', '', $line));
 					$this->command = null;
 					$lines = [];
