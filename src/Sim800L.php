@@ -1,4 +1,4 @@
-<?php
+<?php /** @noinspection PhpIncompatibleReturnTypeInspection */
 
 namespace Yauhenko\GSM;
 
@@ -16,6 +16,7 @@ use Yauhenko\GSM\Event\HangUpEvent;
 use Yauhenko\GSM\Event\CommonEvent;
 use React\Stream\DuplexResourceStream;
 use React\Stream\DuplexStreamInterface;
+use React\Promise\ExtendedPromiseInterface;
 
 class Sim800L {
 
@@ -150,7 +151,7 @@ class Sim800L {
 		return $this;
 	}
 
-	public function setBaudRate(int $rate): Promise {
+	public function setBaudRate(int $rate): ExtendedPromiseInterface {
 		return $this->exec("stty -F {$this->port} {$rate}");
 	}
 
@@ -161,7 +162,7 @@ class Sim800L {
 
 	// Main
 
-	public function init(int $rate = 9600): Promise {
+	public function init(int $rate = 9600): ExtendedPromiseInterface {
 		return
 			$this->setBaudRate($rate)
 			->then(fn() => $this->command('AT'))
@@ -173,7 +174,7 @@ class Sim800L {
 
 	// Info
 
-	public function getModuleInfo(): Promise {
+	public function getModuleInfo(): ExtendedPromiseInterface {
 		$about = [];
 		return $this->command('AT+GMM')->then(function(array $res) use (&$about) {
 			$about['name'] = $res[0];
@@ -184,7 +185,7 @@ class Sim800L {
 		});
 	}
 
-	public function getOperator(): Promise {
+	public function getOperator(): ExtendedPromiseInterface {
 		return $this->command('AT+COPS?')->then(function(array $res) {
 			$res = explode(':', $res[0]);
 			$res = str_getcsv(trim($res[1]));
@@ -192,7 +193,7 @@ class Sim800L {
 		});
 	}
 
-	public function getModuleStatus(): Promise {
+	public function getModuleStatus(): ExtendedPromiseInterface {
 		return $this->command('AT+CPAS')->then(function(array $res) {
 			if(preg_match('/^\+CPAS: ([0-4]+)$/', $res[0], $m)) {
 				switch((int)$m[1]) {
@@ -208,7 +209,7 @@ class Sim800L {
 		});
 	}
 
-	public function getRegistrationStatus(): Promise {
+	public function getRegistrationStatus(): ExtendedPromiseInterface {
 		return $this->command('AT+CREG?')->then(function(array $res) {
 			if(preg_match('/^\+CREG: ([0-2]+),([0-4]+)$/', $res[0], $m)) {
 				return [
@@ -225,7 +226,7 @@ class Sim800L {
 		});
 	}
 
-	public function getSignalLevel(): Promise {
+	public function getSignalLevel(): ExtendedPromiseInterface {
 		return $this->command('AT+CSQ')->then(function(array $res) {
 			if(preg_match('/^\+CSQ\: ([0-9]+),([0-9]+)$/', $res[0], $m)) {
 				$value = (int)$m[1];
@@ -244,15 +245,15 @@ class Sim800L {
 
 	// Calls
 
-	public function dial(string $number): Promise {
+	public function dial(string $number): ExtendedPromiseInterface {
 		return $this->command('ATD' . $number . ';')->then(fn() => true);
 	}
 
-	public function answer(): Promise {
+	public function answer(): ExtendedPromiseInterface {
 		return $this->command('ATA')->then(fn() => true);
 	}
 
-	public function hangUp(): Promise {
+	public function hangUp(): ExtendedPromiseInterface {
 		return $this->command('ATH0')->then(function() {
 			$this->dispatch(new HangUpEvent());
 		});
@@ -260,7 +261,7 @@ class Sim800L {
 
 	// SMS
 
-	public function listSms(): Promise {
+	public function listSms(): ExtendedPromiseInterface {
 		return $this->command('AT+CMGL="ALL"')->then(function(array $res) {
 			$list = [];
 			foreach($res as $idx => $line) {
@@ -272,30 +273,30 @@ class Sim800L {
 		});
 	}
 
-	public function readSms(int $id): Promise {
+	public function readSms(int $id): ExtendedPromiseInterface {
 		return $this->command('AT+CMGR=' . $id)->then(function(array $res) use ($id) {
 			[$head, $body] = $res;
 			return $this->parseSms($head, $body, $id);
 		});
 	}
 
-	public function deleteSms(int $id): Promise {
+	public function deleteSms(int $id): ExtendedPromiseInterface {
 		return $this->command('AT+CMGD=' . $id);
 	}
 
 	// IMEI
 
-	public function getImei(): Promise {
+	public function getImei(): ExtendedPromiseInterface {
 		return $this->command('AT+GSN')->then(fn($res) => $res[0]);
 	}
 
-	public function setEmei(string $imei): Promise {
+	public function setEmei(string $imei): ExtendedPromiseInterface {
 		return $this->command('AT+EGMR=1,7,"' . $imei . '"')->then(fn() => true);
 	}
 
 	// PIN
 
-	public function isPinEnabled(): Promise {
+	public function isPinEnabled(): ExtendedPromiseInterface {
 		return $this->command('AT+CPIN?')->then(function(array $res) {
 			if($res[0] === '+CPIN: READY') return false;
 			if($res[0] === '+CPIN: SIM PIN') return true;
@@ -303,57 +304,59 @@ class Sim800L {
 		});
 	}
 
-	public function enterPin(string $pin): Promise {
+	public function enterPin(string $pin): ExtendedPromiseInterface {
 		return $this->command('AT+CPIN=' . $pin)->then(fn() => true);
 	}
 
-	public function enablePin(string $pin): Promise {
+	public function enablePin(string $pin): ExtendedPromiseInterface {
 		return $this->command('AT+CLCK="SC",1,"' . $pin . '"')->then(fn() => true);
 	}
 
-	public function disablePin(string $pin): Promise {
+	public function disablePin(string $pin): ExtendedPromiseInterface {
 		return $this->command('AT+CLCK="SC",0,"' . $pin . '"')->then(fn() => true);
 	}
 
 	// Settings
 
-	public function setDateTime(?DateTimeInterface $dateTime = null): Promise {
+	public function setDateTime(?DateTimeInterface $dateTime = null): ExtendedPromiseInterface {
 		if(!$dateTime) $dateTime = new DateTime;
 		return $this->command('AT+CCLK="' . $dateTime->format('d/m/y,H:i:s+00') . '"');
 	}
 
-	public function setDefaultSettings(int $profileId = 0): Promise {
+	public function setDefaultSettings(int $profileId = 0): ExtendedPromiseInterface {
 		return $this->command('ATZ' . $profileId)->then(fn() => true);
 	}
 
-	public function resetSettings(): Promise {
+	public function resetSettings(): ExtendedPromiseInterface {
 		return $this->command('AT&F')->then(fn() => true);
 	}
 
-	public function saveSettings(int $profileId = 0): Promise {
+	public function saveSettings(int $profileId = 0): ExtendedPromiseInterface {
 		return $this->command('AT&W' . $profileId)->then(fn() => true);
 	}
 
 	// Power management
 
-	public function reboot(): Promise {
+	public function reboot(): ExtendedPromiseInterface {
 		return $this->command('AT+CFUN=1,1');
 	}
 
-	public function powerDown(bool $force = false): Promise {
+	public function powerDown(bool $force = false): ExtendedPromiseInterface {
 		return $this->command('AT+CPOWD=' . ($force ? 0 : 1));
 	}
 
-	public function setPowerSavingMode(int $mode, bool $reboot = false): Promise {
+	public function setPowerSavingMode(int $mode, bool $reboot = false): ExtendedPromiseInterface {
 		return $this->command('AT+CFUN=' . $mode . ',' . (int)$reboot);
 	}
 
 	// Other private tools
 
-	protected function command(string $command): Promise {
+	protected function command(string $command): ExtendedPromiseInterface {
 		return new Promise(function(callable $resolve, callable $reject) use ($command) {
 			if($this->command) {
-				$reject('Another command in progreess: ' . $this->command);
+//				throw new RuntimeException('Another command in progreess: ' . $this->command);
+				//$reject('Another command in progreess: ' . $this->command);
+				call_user_func($reject, new RuntimeException('Another command in progreess: ' . $this->command));
 			} else {
 				$this->command = $command;
 				$this->resolve = $resolve;
@@ -364,7 +367,7 @@ class Sim800L {
 		});
 	}
 
-	protected function exec(string $command): Promise {
+	protected function exec(string $command): ExtendedPromiseInterface {
 		return new Promise(function(callable $resolve, callable $reject) use ($command) {
 			static $stdout = '', $stderr = '';
 			$process = new Process($command);
