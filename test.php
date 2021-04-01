@@ -1,39 +1,55 @@
 <?php
 
+use Yauhenko\GSM\Sms;
 use Yauhenko\GSM\Sim800L;
+use React\EventLoop\Factory as EventLoop;
+use Yauhenko\GSM\Event\RingEvent;
+use Yauhenko\GSM\Event\NewSmsEvent;
+use Yauhenko\GSM\Event\HangUpEvent;
 
 include __DIR__ . '/vendor/autoload.php';
 
+$loop = EventLoop::create();
 
-$loop = React\EventLoop\Factory::create();
+$sim = Sim800L::factory($loop, '/dev/ttyUSB0');
 
-$serial = Sim800L::factory($loop, '/dev/ttyUSB0');
-
-
-$error = function(...$args) {
-	echo "= ERRORKA!" . print_r($args, 1) . PHP_EOL;
-	var_dump($args);
+$error = function(Throwable $e) {
+	echo "= ERROR " . $e->getMessage() . PHP_EOL;
 };
 
-$serial->on('ring', function(?string $number) {
-	if(!$number) return;
-	echo 'RING! FROM ' . $number . PHP_EOL;
+$sim->addEventListener(RingEvent::class, function(RingEvent $event) {
+	if(!$event->getNumber()) return;
+	echo 'RING! FROM ' . $event->getNumber() . PHP_EOL;
 });
 
-$serial->on('sms', function(int $id) use ($error, $serial) {
-	echo 'SMS! ' . $id . PHP_EOL;
-	$serial->getSms($id)->then(function(array $sms) {
+$sim->addEventListener(NewSmsEvent::class, function(NewSmsEvent $event) use ($error, $sim) {
+	echo 'SMS! ' . $event->getId() . PHP_EOL;
+	$sim->readSms($event->getId())->then(function(Sms $sms) {
 		print_r($sms);
-	})->then(fn() => $serial->deleteSms($id))->otherwise($error);
+	})->then(fn() => $sim->deleteSms($event->getId()))->otherwise($error);
 });
 
-$serial->init()->then(function() use ($error, $serial) {
+$sim->addEventListener(HangUpEvent::class, function() {
+	echo " Hang Up \n";
+});
+
+$sim->init()->then(function() use ($loop, $error, $sim) {
 	echo '= INIT OK' . PHP_EOL;
 
-//	$serial->getSms(16)->then(function(array $sms) {
-//		print_r($sms);
-//	})
-//		->otherwise($error);
+//	$sim->getModuleInfo()->then(function($r)  {
+//
+//		print_r($r);
+//
+//
+//	})->otherwise($error);
+
+//
+//
+//	$sim->listSms()->then(function(array $messages) {
+//		foreach($messages as $message) {
+//			print_r($message);
+//		}
+//	})->otherwise($error);
 
 //	$serial->getSmsList()->then(function(array $list) {
 //		echo '= SMS LIST:' . PHP_EOL;
@@ -41,26 +57,6 @@ $serial->init()->then(function() use ($error, $serial) {
 //	});
 
 })->otherwise($error);
-
-
-
-
-//
-//
-
-//
-//$serial->getImei()->then(function(string $imei) {
-//	echo "  IMEI OK: {$imei}\n";
-//});
-
-//echo $serial->getSignal();
-//$serial->listen();
-
-
-//$loop = React\EventLoop\Factory::create();
-//
-//$loop->run();
-
 
 
 $loop->run();

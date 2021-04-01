@@ -2,25 +2,38 @@
 
 namespace Yauhenko\GSM;
 
+use DateTime;
+use RuntimeException;
+use DateTimeInterface;
 use React\Promise\Promise;
 use InvalidArgumentException;
+use Yauhenko\GSM\Event\Event;
 use React\ChildProcess\Process;
+use Yauhenko\GSM\Event\RingEvent;
 use React\EventLoop\LoopInterface;
+use Yauhenko\GSM\Event\NewSmsEvent;
+use Yauhenko\GSM\Event\HangUpEvent;
+use Yauhenko\GSM\Event\CommonEvent;
 use React\Stream\DuplexResourceStream;
 use React\Stream\DuplexStreamInterface;
 
 class Sim800L {
 
-	public const EVENT_RING = 'ring';
-	public const EVENT_SMS  = 'sms';
+	public const POWER_SAVING_MINIMAL = 0;
+	public const POWER_SAVING_DISABLED = 1;
+	public const POWER_SAVING_DISABLE_SIGNAL = 2;
 
 	protected ?string $port;
 	protected DuplexStreamInterface $stream;
 	protected LoopInterface $loop;
 
 	protected ?string $command = null;
-	protected mixed $resolve = null;
-	protected mixed $reject = null;
+
+	/** @var callable $resolve  */
+	protected $resolve = null;
+
+	/** @var callable $reject  */
+	protected $reject = null;
 	protected bool $debug = false;
 
 	protected array $listeners = [];
@@ -33,19 +46,25 @@ class Sim800L {
 		$this->loop = $loop;
 	}
 
-	public function on(string $event, callable $listener): self {
+	// Events
+
+	public function addEventListener(string $event, callable $listener): self {
 		$this->listeners[$event][] = $listener;
 		return $this;
 	}
 
-	protected function emit(string $event, mixed $payload): self {
-		if(key_exists($event, $this->listeners)) {
-			foreach($this->listeners[$event] as $listener) {
-				call_user_func($listener, $payload);
+	protected function dispatch(Event $event): self {
+		$class = get_class($event);
+		if ($this->debug) echo ' >>>>>>>>> EVENT ' . $class . PHP_EOL;
+		if(key_exists($class, $this->listeners)) {
+			foreach($this->listeners[$class] as $listener) {
+				call_user_func($listener, $event);
 			}
 		}
 		return $this;
 	}
+
+	// Port
 
 	public function open(string $port): self {
 		$this->port = $port;
@@ -74,32 +93,45 @@ class Sim800L {
 					call_user_func($this->resolve, $result);
 
 				// ERROR
-				} elseif($line === 'ERROR') {
+				} elseif($line === 'ERROR' || str_contains($line, '+CME ERROR')) {
+					$line = trim(str_replace('+CME ERROR:', '', $line));
 					$this->command = null;
 					$lines = [];
 					$buffer = '';
-					call_user_func($this->reject, $result);
+					call_user_func($this->reject, new RuntimeException($line));
 
 				} elseif($line === 'RING') {
-					$this->emit(self::EVENT_RING, null);
+					$this->dispatch(new RingEvent);
 
 				} elseif(preg_match('/^\+CLIP: "([0-9\+]+)"/', $line, $clip)) {
-					$this->emit(self::EVENT_RING, $clip[1]);
+					$this->dispatch(new RingEvent($clip[1]));
 
 				} elseif(preg_match('/^\+CMTI: "SM",([0-9]+)$/', $line, $sms)) {
-					$this->emit(self::EVENT_SMS, (int)$sms[1]);
+					$this->dispatch(new NewSmsEvent((int)$sms[1]));
 
 				} elseif($line === 'BUSY') {
-					$buffer = '';
+					$this->dispatch(new HangUpEvent($line));
+//
+				} elseif($line === 'NO DIALTONE') {
+					$this->dispatch(new HangUpEvent($line));
+//
+				} elseif($line === 'NO CARRIER') {
+					$this->dispatch(new HangUpEvent($line));
+//
+				} elseif($line === 'NO ANSWER') {
+					$this->dispatch(new HangUpEvent($line));
 
 				} elseif($line === 'CONNECT') {
-					$buffer = '';
+					$this->dispatch(new CommonEvent($line));
 
-				} elseif($line === 'NO ANSWER') {
-					$buffer = '';
+				} elseif($line === 'Call Ready') {
+					$this->dispatch(new CommonEvent('CALL READY'));
 
-				} elseif($line === 'NO CARRIER') {
-					$buffer = '';
+				} elseif($line === 'SMS Ready') {
+					$this->dispatch(new CommonEvent('SMS READY'));
+
+				} elseif($line === 'NORMAL POWER DOWN') {
+					$this->dispatch(new CommonEvent('POWER DOWN'));
 
 				} elseif($line !== '') {
 					$lines[] = $line;
@@ -118,15 +150,6 @@ class Sim800L {
 		return $this;
 	}
 
-	public function init(int $rate = 9600): Promise {
-		return
-			$this->setBaudRate($rate)
-			->then(fn() => $this->command('AT'))
-			->then(fn() => $this->command('AT+CMGF=1'))
-			->then(fn() => $this->command('AT+CSCS="UCS2"'))
-			->then(fn() => $this->command('AT+CLIP=1'));
-	}
-
 	public function setBaudRate(int $rate): Promise {
 		return $this->exec("stty -F {$this->port} {$rate}");
 	}
@@ -136,7 +159,198 @@ class Sim800L {
 		return $this;
 	}
 
-	public function command(string $command): Promise {
+	// Main
+
+	public function init(int $rate = 9600): Promise {
+		return
+			$this->setBaudRate($rate)
+			->then(fn() => $this->command('AT'))
+			->then(fn() => $this->command('AT+CMEE=2'))
+			->then(fn() => $this->command('AT+CMGF=1'))
+			->then(fn() => $this->command('AT+CSCS="UCS2"'))
+			->then(fn() => $this->command('AT+CLIP=1'));
+	}
+
+	// Info
+
+	public function getModuleInfo(): Promise {
+		$about = [];
+		return $this->command('AT+GMM')->then(function(array $res) use (&$about) {
+			$about['name'] = $res[0];
+		})->then(fn() => $this->command('AT+GMR'))->then(function(array $res) use (&$about) {
+			$about['version'] = $res[0];
+		})->then(function() use (&$about) {
+			return $about;
+		});
+	}
+
+	public function getOperator(): Promise {
+		return $this->command('AT+COPS?')->then(function(array $res) {
+			$res = explode(':', $res[0]);
+			$res = str_getcsv(trim($res[1]));
+			return $res[2];
+		});
+	}
+
+	public function getModuleStatus(): Promise {
+		return $this->command('AT+CPAS')->then(function(array $res) {
+			if(preg_match('/^\+CPAS: ([0-4]+)$/', $res[0], $m)) {
+				switch((int)$m[1]) {
+					case 0: return 'ready';
+					case 2: return 'unknown';
+					case 3: return 'ring';
+					case 4: return 'voice';
+					default: return 'na';
+				}
+			} else {
+				throw new RuntimeException('Unexpected response: ' . $res[0]);
+			}
+		});
+	}
+
+	public function getRegistrationStatus(): Promise {
+		return $this->command('AT+CREG?')->then(function(array $res) {
+			if(preg_match('/^\+CREG: ([0-2]+),([0-4]+)$/', $res[0], $m)) {
+				return [
+					0 => 'unreg',
+					1 => 'home',
+					2 => 'search',
+					3 => 'reject',
+					4 => 'unknown',
+					5 => 'roaming'
+				][(int)$m[2]];
+			} else {
+				throw new RuntimeException('Unexpected response: ' . $res[0]);
+			}
+		});
+	}
+
+	public function getSignalLevel(): Promise {
+		return $this->command('AT+CSQ')->then(function(array $res) {
+			if(preg_match('/^\+CSQ\: ([0-9]+),([0-9]+)$/', $res[0], $m)) {
+				$value = (int)$m[1];
+				if($value === 99) return 0;
+				elseif($value >= 15) return 5;
+				elseif($value >= 12) return 4;
+				elseif($value >= 9) return 3;
+				elseif($value >= 6) return 2;
+				elseif($value >= 0) return 1;
+				else return 0;
+			} else {
+				throw new RuntimeException('Unexpected response: ' . $res[0]);
+			}
+		});
+	}
+
+	// Calls
+
+	public function dial(string $number): Promise {
+		return $this->command('ATD' . $number . ';')->then(fn() => true);
+	}
+
+	public function answer(): Promise {
+		return $this->command('ATA')->then(fn() => true);
+	}
+
+	public function hangUp(): Promise {
+		return $this->command('ATH0')->then(function() {
+			$this->dispatch(new HangUpEvent());
+		});
+	}
+
+	// SMS
+
+	public function listSms(): Promise {
+		return $this->command('AT+CMGL="ALL"')->then(function(array $res) {
+			$list = [];
+			foreach($res as $idx => $line) {
+				if(preg_match('/^\+CMGL\:/', $line)) {
+					$list[] = $this->parseSms($line, $res[$idx + 1]);
+				}
+			}
+			return $list;
+		});
+	}
+
+	public function readSms(int $id): Promise {
+		return $this->command('AT+CMGR=' . $id)->then(function(array $res) use ($id) {
+			[$head, $body] = $res;
+			return $this->parseSms($head, $body, $id);
+		});
+	}
+
+	public function deleteSms(int $id): Promise {
+		return $this->command('AT+CMGD=' . $id);
+	}
+
+	// IMEI
+
+	public function getImei(): Promise {
+		return $this->command('AT+GSN')->then(fn($res) => $res[0]);
+	}
+
+	public function setEmei(string $imei): Promise {
+		return $this->command('AT+EGMR=1,7,"' . $imei . '"')->then(fn() => true);
+	}
+
+	// PIN
+
+	public function isPinEnabled(): Promise {
+		return $this->command('AT+CPIN?')->then(function(array $res) {
+			if($res[0] === '+CPIN: READY') return false;
+			if($res[0] === '+CPIN: SIM PIN') return true;
+			throw new RuntimeException('Unexpected response: ' . $res[0]);
+		});
+	}
+
+	public function enterPin(string $pin): Promise {
+		return $this->command('AT+CPIN=' . $pin)->then(fn() => true);
+	}
+
+	public function enablePin(string $pin): Promise {
+		return $this->command('AT+CLCK="SC",1,"' . $pin . '"')->then(fn() => true);
+	}
+
+	public function disablePin(string $pin): Promise {
+		return $this->command('AT+CLCK="SC",0,"' . $pin . '"')->then(fn() => true);
+	}
+
+	// Settings
+
+	public function setDateTime(?DateTimeInterface $dateTime = null): Promise {
+		if(!$dateTime) $dateTime = new DateTime;
+		return $this->command('AT+CCLK="' . $dateTime->format('d/m/y,H:i:s+00') . '"');
+	}
+
+	public function setDefaultSettings(int $profileId = 0): Promise {
+		return $this->command('ATZ' . $profileId)->then(fn() => true);
+	}
+
+	public function resetSettings(): Promise {
+		return $this->command('AT&F')->then(fn() => true);
+	}
+
+	public function saveSettings(int $profileId = 0): Promise {
+		return $this->command('AT&W' . $profileId)->then(fn() => true);
+	}
+
+	// Power management
+
+	public function reboot(): Promise {
+		return $this->command('AT+CFUN=1,1');
+	}
+
+	public function powerDown(bool $force = false): Promise {
+		return $this->command('AT+CPOWD=' . ($force ? 0 : 1));
+	}
+
+	public function setPowerSavingMode(int $mode, bool $reboot = false): Promise {
+		return $this->command('AT+CFUN=' . $mode . ',' . (int)$reboot);
+	}
+
+	// Other private tools
+
+	protected function command(string $command): Promise {
 		return new Promise(function(callable $resolve, callable $reject) use ($command) {
 			if($this->command) {
 				$reject('Another command in progreess: ' . $this->command);
@@ -149,72 +363,6 @@ class Sim800L {
 			}
 		});
 	}
-
-	public function getSmsList(): Promise {
-		return $this->command('AT+CMGL="ALL"')->then(function(array $res) {
-			$list = [];
-			foreach($res as $idx => $line) {
-				if(preg_match('/^\+CMGL\:/', $line)) {
-					$list[] = $this->parseSms($line, $res[$idx + 1]);
-				}
-			}
-			return $list;
-		});
-	}
-
-	protected function parseSms(string $head, string $body, int $id = null): array {
-		if(preg_match('/^\+CMG(L|R)\:/', $head, $m)) {
-			$head = str_getcsv($head);
-			if($m[1] === 'L') {
-				$id = (int)explode(': ', $head[0])[1];
-				$from = $this->decode($head[2]);
-				$date = $head[4];
-			} else {
-				$from = $this->decode($head[1]);
-				$date = $head[3];
-			}
-			$dt = explode(',', $date);
-			$d = explode('/', $dt[0]);
-			$dt[1] = explode('+', $dt[1]);
-			$date = "20{$d[2]}-{$d[1]}-{$d[0]} {$dt[1][0]}";
-			return [
-				'id' => $id,
-				'from' => $from,
-				'date' => $date,
-				'text' => $this->decode($body)
-			];
-		} else {
-			throw new InvalidArgumentException('Failed to parse sms');
-		}
-	}
-
-	public function getSms(int $id): Promise {
-		return $this->command('AT+CMGR=' . $id)->then(function(array $res) use ($id) {
-			[$head, $body] = $res;
-			return $this->parseSms($head, $body, $id);
-		});
-	}
-
-	public function deleteSms(int $id): Promise {
-		return $this->command('AT+CMGD=' . $id);
-	}
-
-	protected function decode(string $str): string {
-		if(!preg_match('/^[A-F0-9]*$/', $str)) return '<failed to decode>';
-		preg_match_all('/.{4}/', strtolower($str), $chars);
-		$chars = array_map(fn($s) => "\\u{$s}", $chars[0]);
-		return json_decode('"' . implode('', $chars) . '"');
-	}
-
-	public function getImei(): Promise {
-		return $this->command('AT+GSN')->then(fn($res) => $res[0]);
-	}
-
-//	public function setEmei(string $imei): self {
-//		$this->command('AT+EGMR=1,7,"' . $imei . '"');
-//		$this->command('AT&W');
-//		return $this;
-//	}
 
 	protected function exec(string $command): Promise {
 		return new Promise(function(callable $resolve, callable $reject) use ($command) {
@@ -236,34 +384,38 @@ class Sim800L {
 			});
 		});
 	}
-//
-//	public function getSignal(): int {
-//		[$value] = $this->command('AT+CSQ');
-//		if(!preg_match('/^\+CSQ\: ([0-9]+),([0-9]+)$/', $value, $m))
-//			throw new Exception('Failed go parse signal: ' . $value);
-//		$value = (int)$m[1];
-//		if($value === 99) return 0;
-//		elseif($value >= 15) return 5;
-//		elseif($value >= 12) return 4;
-//		elseif($value >= 9) return 3;
-//		elseif($value >= 6) return 2;
-//		elseif($value >= 0) return 1;
-//		else return 0;
-//	}
 
-//	public function listen() {
-//		while(true) {
-//			$line = $this->readLine();
-//			if($line === 'RING') {
-//				echo 'INCOMING CALL' . PHP_EOL;
-//			}
-//			if(str_contains($line, '+CLIP:')) {
-//				echo 'NUBPER: ' . $line . PHP_EOL;
-//			}
-//			if($line === 'NO CARRIER') {
-//				echo 'HANG UP' . PHP_EOL;
-//			}
-//		}
-//	}
+	protected function decodeUCS2(string $str): string {
+		if(!preg_match('/^[A-F0-9]*$/', $str)) return '<failed to decode>';
+		preg_match_all('/.{4}/', strtolower($str), $chars);
+		$chars = array_map(fn($s) => "\\u{$s}", $chars[0]);
+		return json_decode('"' . implode('', $chars) . '"');
+	}
+
+	protected function parseSms(string $head, string $body, int $id = null): Sms {
+		if(preg_match('/^\+CMG(L|R)\:/', $head, $m)) {
+			$head = str_getcsv($head);
+			if($m[1] === 'L') {
+				$id = (int)explode(': ', $head[0])[1];
+				$from = $this->decodeUCS2($head[2]);
+				$date = $head[4];
+			} else {
+				$from = $this->decodeUCS2($head[1]);
+				$date = $head[3];
+			}
+			$dt = explode(',', $date);
+			$d = explode('/', $dt[0]);
+			$dt[1] = explode('+', $dt[1]);
+			$date = "20{$d[2]}-{$d[1]}-{$d[0]} {$dt[1][0]}";
+			return Sms::factory([
+				'id' => $id,
+				'from' => $from,
+				'date' => new DateTime($date),
+				'message' => $this->decodeUCS2($body)
+			]);
+		} else {
+			throw new InvalidArgumentException('Failed to parse sms');
+		}
+	}
 
 }
