@@ -2,6 +2,8 @@
 
 namespace Yauhenko\GSM\Event;
 
+use Symfony\Contracts\EventDispatcher\Event;
+
 final class CommonEvent extends Event {
 
 	protected string $event;

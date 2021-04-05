@@ -1,7 +1,7 @@
 {
 	"name": "yauhenko/sim800l-php",
 	"description": "PHP-SDK for SIM800L GSM module",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"type": "library",
 	"authors": [
 		{
@@ -20,6 +20,8 @@
 		"react/event-loop": "^1.1",
 		"react/stream": "^1.1",
 		"react/promise": "^2.8",
-		"react/child-process": "^0.6.2"
+		"react/child-process": "^0.6.2",
+		"symfony/event-dispatcher": "^5.2",
+		"ext-json": "*"
 	}
 }

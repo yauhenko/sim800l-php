@@ -2,7 +2,9 @@
 
 namespace Yauhenko\GSM\Event;
 
-class HangUpEvent extends Event {
+use Symfony\Contracts\EventDispatcher\Event;
+
+final class HangUpEvent extends Event {
 
 	protected ?string $reason;
 

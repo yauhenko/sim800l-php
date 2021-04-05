@@ -7,26 +7,31 @@ use RuntimeException;
 use DateTimeInterface;
 use React\Promise\Promise;
 use InvalidArgumentException;
-use Yauhenko\GSM\Event\Event;
 use React\ChildProcess\Process;
 use Yauhenko\GSM\Event\RingEvent;
 use React\EventLoop\LoopInterface;
-use Yauhenko\GSM\Event\NewSmsEvent;
+use Yauhenko\GSM\Event\SmsReceivedEvent;
 use Yauhenko\GSM\Event\HangUpEvent;
 use Yauhenko\GSM\Event\CommonEvent;
+use Yauhenko\GSM\Event\PortOpenedEvent;
 use React\Stream\DuplexResourceStream;
+use Yauhenko\GSM\Event\PortClosedEvent;
 use React\Stream\DuplexStreamInterface;
 use React\Promise\ExtendedPromiseInterface;
+use Symfony\Component\EventDispatcher\EventDispatcher;
+use Symfony\Component\EventDispatcher\EventDispatcherInterface;
+use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 
 class Sim800L {
 
-	public const POWER_SAVING_MINIMAL = 0;
-	public const POWER_SAVING_DISABLED = 1;
-	public const POWER_SAVING_DISABLE_SIGNAL = 2;
+	public const POWER_SAVING     = 0;
+	public const POWER_SAVING_OFF = 1;
+	public const POWER_SAVING_MAX = 2;
 
-	protected ?string $port;
+	protected ?string $port = null;
 	protected DuplexStreamInterface $stream;
 	protected LoopInterface $loop;
+	protected EventDispatcherInterface $dispatcher;
 
 	protected ?string $command = null;
 
@@ -35,41 +40,52 @@ class Sim800L {
 
 	/** @var callable $reject  */
 	protected $reject = null;
-	protected bool $debug = false;
+	protected bool $debug = true;
 
 	protected array $listeners = [];
 
-	public static function factory(LoopInterface $loop, string $port): self {
-		return (new self($loop))->open($port);
-	}
+	// Factory
+
+//	public static function factory(LoopInterface $loop, string $port): self {
+//		return (new self($loop))->open($port);
+//	}
 
 	public function __construct(LoopInterface $loop) {
 		$this->loop = $loop;
+		$this->dispatcher = new EventDispatcher;
 	}
 
 	// Events
 
-	public function addEventListener(string $event, callable $listener): self {
-		$this->listeners[$event][] = $listener;
+	public function addListener(string $eventName, callable $listener, int $priority = 0): self {
+		$this->dispatcher->addListener($eventName, $listener, $priority);
 		return $this;
 	}
 
-	protected function dispatch(Event $event): self {
-		$class = get_class($event);
-		if ($this->debug) echo ' >>>>>>>>> EVENT ' . $class . PHP_EOL;
-		if(key_exists($class, $this->listeners)) {
-			foreach($this->listeners[$class] as $listener) {
-				call_user_func($listener, $event);
-			}
-		}
+	public function addSubscriber(EventSubscriberInterface $subscriber): self {
+		$this->dispatcher->addSubscriber($subscriber);
 		return $this;
+	}
+
+	public function getDispatcher(): EventDispatcherInterface {
+		return $this->dispatcher;
 	}
 
 	// Port
 
 	public function open(string $port): self {
+
+		if($this->port === $port) {
+			throw new RuntimeException('This port already opened');
+		} elseif($this->port) {
+			throw new RuntimeException('Another port already opened (' . $this->port. '). Close it at first');
+		}
+
+		$h = @fopen($port, 'rw+');
+		if(!$h) throw new RuntimeException('Failed to open port: ' . $port);
 		$this->port = $port;
-		$this->stream = new DuplexResourceStream(fopen($port, 'rw+'), $this->loop, 1);
+		$this->stream = new DuplexResourceStream($h, $this->loop, 1);
+		$this->stream->on('close', fn() => $this->dispatcher->dispatch(new PortClosedEvent($port)));
 		$this->stream->on('data', function(string $char) {
 			static $buffer = '';
 			static $lines = [];
@@ -102,37 +118,37 @@ class Sim800L {
 					call_user_func($this->reject, new RuntimeException($line));
 
 				} elseif($line === 'RING') {
-					$this->dispatch(new RingEvent);
+					$this->dispatcher->dispatch(new RingEvent);
 
 				} elseif(preg_match('/^\+CLIP: "([0-9\+]+)"/', $line, $clip)) {
-					$this->dispatch(new RingEvent($clip[1]));
+					$this->dispatcher->dispatch(new RingEvent($clip[1]));
 
-				} elseif(preg_match('/^\+CMTI: "SM",([0-9]+)$/', $line, $sms)) {
-					$this->dispatch(new NewSmsEvent((int)$sms[1]));
+				} elseif(preg_match('/^\+CMTI: "(SM|ME)",([0-9]+)$/', $line, $sms)) {
+					$this->dispatcher->dispatch(new SmsReceivedEvent((int)$sms[2]));
 
 				} elseif($line === 'BUSY') {
-					$this->dispatch(new HangUpEvent($line));
+					$this->dispatcher->dispatch(new HangUpEvent($line));
 //
 				} elseif($line === 'NO DIALTONE') {
-					$this->dispatch(new HangUpEvent($line));
+					$this->dispatcher->dispatch(new HangUpEvent($line));
 //
 				} elseif($line === 'NO CARRIER') {
-					$this->dispatch(new HangUpEvent($line));
+					$this->dispatcher->dispatch(new HangUpEvent($line));
 //
 				} elseif($line === 'NO ANSWER') {
-					$this->dispatch(new HangUpEvent($line));
+					$this->dispatcher->dispatch(new HangUpEvent($line));
 
 				} elseif($line === 'CONNECT') {
-					$this->dispatch(new CommonEvent($line));
+					$this->dispatcher->dispatch(new CommonEvent($line));
 
 				} elseif($line === 'Call Ready') {
-					$this->dispatch(new CommonEvent('CALL READY'));
+					$this->dispatcher->dispatch(new CommonEvent('CALL READY'));
 
 				} elseif($line === 'SMS Ready') {
-					$this->dispatch(new CommonEvent('SMS READY'));
+					$this->dispatcher->dispatch(new CommonEvent('SMS READY'));
 
 				} elseif($line === 'NORMAL POWER DOWN') {
-					$this->dispatch(new CommonEvent('POWER DOWN'));
+					$this->dispatcher->dispatch(new CommonEvent('POWER DOWN'));
 
 				} elseif($line !== '') {
 					$lines[] = $line;
@@ -148,6 +164,8 @@ class Sim800L {
 
 		});
 
+		$this->dispatcher->dispatch(new PortOpenedEvent($port));
+
 		return $this;
 	}
 
@@ -156,7 +174,9 @@ class Sim800L {
 	}
 
 	public function close(): self {
+		if(!$this->port) throw new RuntimeException('Port is not opened');
 		$this->stream->close();
+		$this->port = null;
 		return $this;
 	}
 
@@ -255,7 +275,7 @@ class Sim800L {
 
 	public function hangUp(): ExtendedPromiseInterface {
 		return $this->command('ATH0')->then(function() {
-			$this->dispatch(new HangUpEvent());
+			$this->dispatcher->dispatch(new HangUpEvent());
 		});
 	}
 
@@ -327,7 +347,7 @@ class Sim800L {
 		return $this->command('ATZ' . $profileId)->then(fn() => true);
 	}
 
-	public function resetSettings(): ExtendedPromiseInterface {
+	public function setFactorySettings(): ExtendedPromiseInterface {
 		return $this->command('AT&F')->then(fn() => true);
 	}
 
@@ -354,8 +374,6 @@ class Sim800L {
 	protected function command(string $command): ExtendedPromiseInterface {
 		return new Promise(function(callable $resolve, callable $reject) use ($command) {
 			if($this->command) {
-//				throw new RuntimeException('Another command in progreess: ' . $this->command);
-				//$reject('Another command in progreess: ' . $this->command);
 				call_user_func($reject, new RuntimeException('Another command in progreess: ' . $this->command));
 			} else {
 				$this->command = $command;

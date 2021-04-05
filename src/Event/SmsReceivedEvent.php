@@ -2,7 +2,9 @@
 
 namespace Yauhenko\GSM\Event;
 
-class NewSmsEvent extends Event {
+use Symfony\Contracts\EventDispatcher\Event;
+
+final class SmsReceivedEvent extends Event {
 
 	protected int $id;
 

@@ -2,7 +2,9 @@
 
 namespace Yauhenko\GSM\Event;
 
-class RingEvent extends Event {
+use Symfony\Contracts\EventDispatcher\Event;
+
+final class RingEvent extends Event {
 
 	protected ?string $number;
 
